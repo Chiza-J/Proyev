@@ -1,0 +1,74 @@
+version: '3.8'
+
+services:
+  # SQL Server Database
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: techassist-sqlserver
+    environment:
+      - ACCEPT_EULA=Y
+      - SA_PASSWORD=TechAssist2025!
+      - MSSQL_PID=Express
+    ports:
+      - "1433:1433"
+    volumes:
+      - sqlserver_data:/var/opt/mssql
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - techassist-network
+    healthcheck:
+      test: ["/opt/mssql-tools/bin/sqlcmd", "-S", "localhost", "-U", "sa", "-P", "TechAssist2025!", "-Q", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Backend FastAPI
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: techassist-backend
+    environment:
+      - DATABASE_URL=mssql+pyodbc://sa:TechAssist2025!@sqlserver:1433/TechAssistDB?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
+      - JWT_SECRET=your-super-secret-jwt-key-change-in-production
+      - CORS_ORIGINS=http://localhost:3000,http://localhost
+    ports:
+      - "8001:8001"
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    networks:
+      - techassist-network
+    volumes:
+      - ./backend:/app
+    command: >
+      sh -c "sleep 15 &&
+             python init_db.py &&
+             uvicorn server:app --host 0.0.0.0 --port 8001 --reload"
+
+  # Frontend React
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: techassist-frontend
+    environment:
+      - REACT_APP_BACKEND_URL=http://localhost:8001
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - techassist-network
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+    stdin_open: true
+    tty: true
+
+volumes:
+  sqlserver_data:
+
+networks:
+  techassist-network:
+    driver: bridge
