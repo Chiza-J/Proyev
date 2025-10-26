@@ -1,238 +1,181 @@
--- Crear base de datos TechAssist
-IF NOT EXISTS (SELECT * FROM sys.databases WHERE name = 'TechAssistDB')
-BEGIN
-    CREATE DATABASE TechAssistDB;
-END
-GO
+import os
+import time
+from sqlalchemy import create_engine, text
+from dotenv import load_dotenv
 
-USE TechAssistDB;
-GO
+load_dotenv()
 
--- Tabla: Usuarios
-CREATE TABLE usuarios (
-    id_usuario INT PRIMARY KEY IDENTITY(1,1),
-    nombre NVARCHAR(100) NOT NULL,
-    apellido NVARCHAR(100) NOT NULL,
-    correo NVARCHAR(255) NOT NULL UNIQUE,
-    password_hash NVARCHAR(255),
-    telefono NVARCHAR(20),
-    rol NVARCHAR(20) NOT NULL CHECK (rol IN ('Admin', 'Tecnico', 'Cliente')),
-    estado BIT DEFAULT 1,
-    picture NVARCHAR(MAX),
-    fecha_creacion DATETIME2 DEFAULT GETDATE()
-);
-GO
+DATABASE_URL = os.getenv('DATABASE_URL')
 
--- Tabla: Departamento
-CREATE TABLE departamento (
-    id_departamento INT PRIMARY KEY IDENTITY(1,1),
-    nombre_departamento NVARCHAR(100) NOT NULL,
-    descripcion NVARCHAR(MAX)
-);
-GO
+def wait_for_sql_server():
+    """Esperar a que SQL Server esté disponible"""
+    print("=" * 50)
+    print("Esperando que SQL Server esté disponible...")
+    print("=" * 50)
+    
+    # Conectar a master primero (no a TechAssistDB)
+    master_url = DATABASE_URL.replace('/TechAssistDB?', '/master?')
+    
+    max_retries = 30
+    retry_count = 0
+    
+    while retry_count < max_retries:
+        try:
+            engine = create_engine(master_url, pool_pre_ping=True)
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+                conn.commit()
+            engine.dispose()
+            print("✓ SQL Server está disponible")
+            return True
+        except Exception as e:
+            retry_count += 1
+            print(f"Intento {retry_count}/{max_retries}: SQL Server no está listo...")
+            if retry_count % 5 == 0:
+                print(f"  Error: {str(e)[:100]}")
+            time.sleep(2)
+    
+    print("✗ No se pudo conectar a SQL Server")
+    return False
 
--- Tabla: Equipo
-CREATE TABLE equipo (
-    id_equipo INT PRIMARY KEY IDENTITY(1,1),
-    nombre_equipo NVARCHAR(100) NOT NULL,
-    tipo_equipo NVARCHAR(50) NOT NULL,
-    marca NVARCHAR(50),
-    modelo NVARCHAR(50),
-    numero_serie NVARCHAR(100) UNIQUE,
-    id_usuario INT,
-    id_departamento INT,
-    FOREIGN KEY (id_usuario) REFERENCES usuarios(id_usuario) ON DELETE SET NULL,
-    FOREIGN KEY (id_departamento) REFERENCES departamento(id_departamento) ON DELETE SET NULL
-);
-GO
+def create_database():
+    """Crear la base de datos TechAssistDB si no existe"""
+    print("\n" + "=" * 50)
+    print("Creando base de datos TechAssistDB...")
+    print("=" * 50)
+    
+    try:
+        # Conectar a master para crear la base de datos
+        master_url = DATABASE_URL.replace('/TechAssistDB?', '/master?')
+        engine = create_engine(master_url, pool_pre_ping=True)
+        
+        with engine.connect() as conn:
+            # Usar AUTOCOMMIT para CREATE DATABASE
+            conn.execute(text("SET IMPLICIT_TRANSACTIONS OFF"))
+            conn.execution_options(isolation_level="AUTOCOMMIT")
+            
+            # Verificar si existe
+            result = conn.execute(text(
+                "SELECT database_id FROM sys.databases WHERE name = 'TechAssistDB'"
+            ))
+            
+            if result.fetchone() is None:
+                print("Base de datos no existe, creando...")
+                conn.execute(text("CREATE DATABASE TechAssistDB"))
+                print("✓ Base de datos TechAssistDB creada")
+            else:
+                print("✓ Base de datos TechAssistDB ya existe")
+        
+        engine.dispose()
+        
+        # Esperar a que la base de datos esté lista
+        print("Esperando a que la base de datos esté lista...")
+        time.sleep(3)
+        
+        return True
+        
+    except Exception as e:
+        print(f"✗ Error al crear base de datos: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
--- Tabla: Categoria
-CREATE TABLE categoria (
-    id_categoria INT PRIMARY KEY IDENTITY(1,1),
-    nombre_categoria NVARCHAR(100) NOT NULL,
-    descripcion NVARCHAR(MAX)
-);
-GO
+def execute_init_sql():
+    """Ejecutar el archivo init.sql"""
+    print("\n" + "=" * 50)
+    print("Ejecutando script de inicialización...")
+    print("=" * 50)
+    
+    sql_file_paths = [
+        '/app/sql/init.sql',
+        './sql/init.sql',
+        '../sql/init.sql'
+    ]
+    
+    sql_file_path = None
+    for path in sql_file_paths:
+        if os.path.exists(path):
+            sql_file_path = path
+            break
+    
+    if not sql_file_path:
+        print("⚠ Archivo init.sql no encontrado")
+        print("  Continuando sin inicialización de tablas...")
+        return True
+    
+    try:
+        print(f"Leyendo archivo: {sql_file_path}")
+        
+        with open(sql_file_path, 'r', encoding='utf-8') as file:
+            sql_script = file.read()
+        
+        # Conectar a TechAssistDB
+        engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+        
+        # Separar por GO statements
+        batches = [b.strip() for b in sql_script.split('GO') if b.strip()]
+        
+        print(f"Ejecutando {len(batches)} batches SQL...")
+        
+        with engine.connect() as conn:
+            for i, batch in enumerate(batches):
+                try:
+                    # Limpiar comentarios
+                    lines = [line for line in batch.split('\n') 
+                            if line.strip() and not line.strip().startswith('--')]
+                    clean_batch = '\n'.join(lines)
+                    
+                    if clean_batch:
+                        conn.execute(text(clean_batch))
+                        conn.commit()
+                        print(f"  ✓ Batch {i+1}/{len(batches)} ejecutado")
+                except Exception as e:
+                    error_msg = str(e).lower()
+                    if any(x in error_msg for x in ['already exists', 'already an object', 'duplicate']):
+                        print(f"  ⚠ Batch {i+1}: Objeto ya existe (ignorado)")
+                    else:
+                        print(f"  ✗ Error en batch {i+1}: {e}")
+        
+        engine.dispose()
+        print("✓ Inicialización de base de datos completada")
+        return True
+        
+    except Exception as e:
+        print(f"✗ Error al ejecutar init.sql: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
--- Tabla: Prioridad
-CREATE TABLE prioridad (
-    id_prioridad INT PRIMARY KEY IDENTITY(1,1),
-    nombre_prioridad NVARCHAR(20) NOT NULL CHECK (nombre_prioridad IN ('Baja', 'Media', 'Alta')),
-    tiempo_respuesta INT NOT NULL, -- en horas
-    color NVARCHAR(20) NOT NULL
-);
-GO
-
--- Tabla: Estado_ticket
-CREATE TABLE estado_ticket (
-    id_estado INT PRIMARY KEY IDENTITY(1,1),
-    nombre_estado NVARCHAR(20) NOT NULL CHECK (nombre_estado IN ('Abierto', 'En proceso', 'Cerrado')),
-    descripcion NVARCHAR(MAX)
-);
-GO
-
--- Tabla: Ticket
-CREATE TABLE ticket (
-    id_ticket INT PRIMARY KEY IDENTITY(1,1),
-    id_usuario INT NOT NULL,
-    id_tecnico INT,
-    id_equipo INT,
-    id_categoria INT NOT NULL,
-    titulo NVARCHAR(255) NOT NULL,
-    descripcion NVARCHAR(MAX) NOT NULL,
-    prioridad NVARCHAR(20) NOT NULL DEFAULT 'Baja' CHECK (prioridad IN ('Baja', 'Media', 'Alta')),
-    estado NVARCHAR(20) NOT NULL DEFAULT 'Abierto' CHECK (estado IN ('Abierto', 'En proceso', 'Cerrado')),
-    fecha_creacion DATETIME2 DEFAULT GETDATE(),
-    fecha_asignacion DATETIME2,
-    fecha_cierre DATETIME2,
-    ultima_actualizacion_prioridad DATETIME2 DEFAULT GETDATE(),
-    FOREIGN KEY (id_usuario) REFERENCES usuarios(id_usuario),
-    FOREIGN KEY (id_tecnico) REFERENCES usuarios(id_usuario),
-    FOREIGN KEY (id_equipo) REFERENCES equipo(id_equipo) ON DELETE SET NULL,
-    FOREIGN KEY (id_categoria) REFERENCES categoria(id_categoria)
-);
-GO
-
--- Tabla: Comentario
-CREATE TABLE comentario (
-    id_comentario INT PRIMARY KEY IDENTITY(1,1),
-    id_ticket INT NOT NULL,
-    id_usuario INT NOT NULL,
-    comentario NVARCHAR(MAX) NOT NULL,
-    fecha_comentario DATETIME2 DEFAULT GETDATE(),
-    FOREIGN KEY (id_ticket) REFERENCES ticket(id_ticket) ON DELETE CASCADE,
-    FOREIGN KEY (id_usuario) REFERENCES usuarios(id_usuario)
-);
-GO
-
--- Tabla: archivo_adjunto
-CREATE TABLE archivo_adjunto (
-    id_archivo INT PRIMARY KEY IDENTITY(1,1),
-    id_ticket INT NOT NULL,
-    nombre_archivo NVARCHAR(255) NOT NULL,
-    ruta_archivo NVARCHAR(MAX) NOT NULL, -- Base64 o URL
-    fecha_subida DATETIME2 DEFAULT GETDATE(),
-    FOREIGN KEY (id_ticket) REFERENCES ticket(id_ticket) ON DELETE CASCADE
-);
-GO
-
--- Tabla: historial_ticket
-CREATE TABLE historial_ticket (
-    id_historial INT PRIMARY KEY IDENTITY(1,1),
-    id_ticket INT NOT NULL,
-    id_usuario INT,
-    accion_realizada NVARCHAR(MAX) NOT NULL,
-    fecha_accion DATETIME2 DEFAULT GETDATE(),
-    FOREIGN KEY (id_ticket) REFERENCES ticket(id_ticket) ON DELETE CASCADE,
-    FOREIGN KEY (id_usuario) REFERENCES usuarios(id_usuario) ON DELETE SET NULL
-);
-GO
-
--- Tabla: user_sessions (para OAuth)
-CREATE TABLE user_sessions (
-    id_session INT PRIMARY KEY IDENTITY(1,1),
-    id_usuario INT NOT NULL,
-    session_token NVARCHAR(255) NOT NULL UNIQUE,
-    expires_at DATETIME2 NOT NULL,
-    created_at DATETIME2 DEFAULT GETDATE(),
-    FOREIGN KEY (id_usuario) REFERENCES usuarios(id_usuario) ON DELETE CASCADE
-);
-GO
-
--- Índices para mejor rendimiento
-CREATE INDEX idx_usuarios_correo ON usuarios(correo);
-CREATE INDEX idx_usuarios_rol ON usuarios(rol);
-CREATE INDEX idx_ticket_usuario ON ticket(id_usuario);
-CREATE INDEX idx_ticket_tecnico ON ticket(id_tecnico);
-CREATE INDEX idx_ticket_estado ON ticket(estado);
-CREATE INDEX idx_ticket_prioridad ON ticket(prioridad);
-CREATE INDEX idx_ticket_fecha ON ticket(fecha_creacion);
-CREATE INDEX idx_comentario_ticket ON comentario(id_ticket);
-CREATE INDEX idx_archivo_ticket ON archivo_adjunto(id_ticket);
-CREATE INDEX idx_historial_ticket ON historial_ticket(id_ticket);
-CREATE INDEX idx_session_token ON user_sessions(session_token);
-GO
-
--- ====================
--- DATOS INICIALES
--- ====================
-
--- Insertar Departamentos
-INSERT INTO departamento (nombre_departamento, descripcion) VALUES
-('IT', 'Departamento de Tecnología de la Información'),
-('Ventas', 'Departamento de Ventas'),
-('RRHH', 'Recursos Humanos'),
-('Finanzas', 'Departamento Financiero');
-GO
-
--- Insertar Categorías
-INSERT INTO categoria (nombre_categoria, descripcion) VALUES
-('Hardware', 'Problemas relacionados con hardware'),
-('Software', 'Problemas relacionados con software'),
-('Red', 'Problemas de conectividad y red'),
-('Acceso', 'Problemas de acceso y permisos'),
-('Otro', 'Otros problemas técnicos');
-GO
-
--- Insertar Prioridades
-INSERT INTO prioridad (nombre_prioridad, tiempo_respuesta, color) VALUES
-('Baja', 72, '#10B981'),
-('Media', 24, '#F59E0B'),
-('Alta', 4, '#EF4444');
-GO
-
--- Insertar Estados
-INSERT INTO estado_ticket (nombre_estado, descripcion) VALUES
-('Abierto', 'Ticket recién creado, pendiente de asignación'),
-('En proceso', 'Ticket asignado y en proceso de resolución'),
-('Cerrado', 'Ticket resuelto y cerrado');
-GO
-
--- Insertar Usuarios de ejemplo
--- Password para todos: password123 (hasheado con bcrypt)
-INSERT INTO usuarios (nombre, apellido, correo, password_hash, telefono, rol, estado) VALUES
-('Admin', 'Sistema', 'admin@techassist.com', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5NU7WmKIVEq4i', '555-0001', 'Admin', 1),
-('Carlos', 'Técnico', 'tecnico1@techassist.com', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5NU7WmKIVEq4i', '555-0002', 'Tecnico', 1),
-('María', 'Soporte', 'tecnico2@techassist.com', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5NU7WmKIVEq4i', '555-0003', 'Tecnico', 1),
-('Juan', 'Pérez', 'cliente1@empresa.com', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5NU7WmKIVEq4i', '555-1001', 'Cliente', 1),
-('Ana', 'García', 'cliente2@empresa.com', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5NU7WmKIVEq4i', '555-1002', 'Cliente', 1);
-GO
-
--- Insertar Equipos de ejemplo
-INSERT INTO equipo (nombre_equipo, tipo_equipo, marca, modelo, numero_serie, id_usuario, id_departamento) VALUES
-('Laptop Dell Latitude', 'Laptop', 'Dell', 'Latitude 5420', 'DELL-001', 4, 1),
-('HP LaserJet', 'Impresora', 'HP', 'LaserJet Pro M404dn', 'HP-002', NULL, 1),
-('Monitor Samsung', 'Monitor', 'Samsung', 'S24R350', 'SAM-003', 5, 2);
-GO
-
--- Insertar Tickets de ejemplo
-INSERT INTO ticket (id_usuario, id_tecnico, id_equipo, id_categoria, titulo, descripcion, prioridad, estado, fecha_asignacion) VALUES
-(4, 2, 1, 1, 'Laptop no enciende', 'Mi laptop Dell no responde al presionar el botón de encendido. La luz LED parpadea en naranja.', 'Alta', 'En proceso', GETDATE()),
-(5, NULL, NULL, 2, 'Error al abrir Excel', 'Cuando intento abrir archivos de Excel me sale un error de archivo corrupto.', 'Media', 'Abierto', NULL),
-(4, 2, NULL, 3, 'Sin acceso a internet', 'No puedo conectarme a la red WiFi de la oficina.', 'Baja', 'Cerrado', DATEADD(hour, -2, GETDATE()));
-GO
-
--- Insertar Comentarios de ejemplo
-INSERT INTO comentario (id_ticket, id_usuario, comentario) VALUES
-(1, 2, 'He revisado el equipo. Parece ser un problema con la fuente de poder. Voy a reemplazarla.'),
-(1, 4, 'Gracias por la actualización. ¿Cuánto tiempo tomará?'),
-(3, 2, 'Problema resuelto. El router estaba desconectado.');
-GO
-
--- Insertar Historial de ejemplo
-INSERT INTO historial_ticket (id_ticket, id_usuario, accion_realizada) VALUES
-(1, 4, 'Ticket creado con prioridad Baja'),
-(1, NULL, 'Prioridad escalada automáticamente de Baja a Media'),
-(1, 2, 'Asignado a técnico Carlos Técnico | Estado cambiado a En proceso | Prioridad cambiada de Media a Alta'),
-(3, 4, 'Ticket creado con prioridad Baja'),
-(3, 2, 'Estado cambiado a Cerrado');
-GO
-
-PRINT 'Base de datos TechAssist inicializada correctamente con datos de ejemplo';
-PRINT 'Usuarios de prueba:';
-PRINT '  Admin: admin@techassist.com / password123';
-PRINT '  Tecnico 1: tecnico1@techassist.com / password123';
-PRINT '  Tecnico 2: tecnico2@techassist.com / password123';
-PRINT '  Cliente 1: cliente1@empresa.com / password123';
-PRINT '  Cliente 2: cliente2@empresa.com / password123';
-GO
+if __name__ == "__main__":
+    print("\n" + "=" * 50)
+    print("INICIANDO CONFIGURACIÓN DE BASE DE DATOS")
+    print("=" * 50)
+    
+    # Paso 1: Esperar a que SQL Server esté listo
+    if not wait_for_sql_server():
+        print("\n" + "=" * 50)
+        print("✗ ERROR: SQL Server no respondió")
+        print("=" * 50)
+        exit(1)
+    
+    # Paso 2: Crear la base de datos
+    if not create_database():
+        print("\n" + "=" * 50)
+        print("✗ ERROR: No se pudo crear la base de datos")
+        print("=" * 50)
+        exit(1)
+    
+    # Paso 3: Ejecutar init.sql
+    if not execute_init_sql():
+        print("\n" + "=" * 50)
+        print("⚠ ADVERTENCIA: Error en inicialización de tablas")
+        print("=" * 50)
+        # No hacer exit aquí, puede que las tablas ya existan
+    
+    print("\n" + "=" * 50)
+    print("✓ CONFIGURACIÓN COMPLETADA CON ÉXITO")
+    print("=" * 50)
+    print("\nSQL Server está listo en: sqlserver:1433")
+    print("Base de datos: TechAssistDB")
+    print("Usuario: sa")
+    print("=" * 50 + "\n")

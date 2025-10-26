@@ -1,5 +1,4 @@
 services:
-  # SQL Server Database
   sqlserver:
     image: mcr.microsoft.com/mssql/server:2022-latest
     container_name: techassist-sqlserver
@@ -11,16 +10,15 @@ services:
       - "1433:1433"
     volumes:
       - sqlserver_data:/var/opt/mssql
-      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       - techassist-network
     healthcheck:
-      test: ["/opt/mssql-tools/bin/sqlcmd", "-S", "localhost", "-U", "sa", "-P", "TechAssist2025!", "-Q", "SELECT 1"]
-      interval: 10s
-      timeout: 5s
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U SA -P 'TechAssist2025!' -Q 'SELECT 1' -C || exit 1"]
+      interval: 30s
+      timeout: 10s
       retries: 5
+      start_period: 60s
 
-  # Backend FastAPI
   backend:
     build:
       context: ./backend
@@ -39,12 +37,12 @@ services:
       - techassist-network
     volumes:
       - ./backend:/app
+      - ./sql:/app/sql
+      - /app/__pycache__
     command: >
-      sh -c "sleep 15 &&
-             python init_db.py &&
+      sh -c "python init_db.py &&
              uvicorn server:app --host 0.0.0.0 --port 8001 --reload"
 
-  # Frontend React
   frontend:
     build:
       context: ./frontend
@@ -52,6 +50,7 @@ services:
     container_name: techassist-frontend
     environment:
       - REACT_APP_BACKEND_URL=http://localhost:8001
+      - CHOKIDAR_USEPOLLING=true
     ports:
       - "3000:3000"
     depends_on:
@@ -61,6 +60,7 @@ services:
     volumes:
       - ./frontend/src:/app/src
       - ./frontend/public:/app/public
+      - /app/node_modules
     stdin_open: true
     tty: true
 
