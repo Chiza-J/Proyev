@@ -1,32 +1,23 @@
 # Backend
-backend/venv/
 backend/__pycache__/
 backend/*.pyc
 backend/.env
+backend/uploads/
+backend/*.log
 
 # Frontend
 frontend/node_modules/
 frontend/build/
 frontend/.env
 frontend/.env.local
+frontend/.env.production
 
 # Docker
 .docker/
 
-# Database
-sqlserver_data/
-
-# Tests
-tests/
-test_reports/
-*.test.js
-
-# Logs
-*.log
-
-# OS
-.DS_Store
-Thumbs.db
+# SQL Server
+*.mdf
+*.ldf
 
 # IDE
 .vscode/
@@ -34,6 +25,10 @@ Thumbs.db
 *.swp
 *.swo
 
-# Temp
-*.tmp
-*.bak
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/

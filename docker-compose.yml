@@ -1,72 +1,102 @@
+version: '3.8'
+
 services:
   sqlserver:
     image: mcr.microsoft.com/mssql/server:2022-latest
     container_name: techassist-sqlserver
     environment:
       - ACCEPT_EULA=Y
-      - SA_PASSWORD=TechAssist2025!
+      - SA_PASSWORD=TechAssist2024!
       - MSSQL_PID=Express
     ports:
       - "1433:1433"
     volumes:
       - sqlserver_data:/var/opt/mssql
+      - ./database/schema.sql:/tmp/schema.sql
     networks:
       - techassist-network
     healthcheck:
-      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U SA -P 'TechAssist2025!' -Q 'SELECT 1' -C || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
+      test: /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P TechAssist2024! -Q "SELECT 1" || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 30
       start_period: 60s
+    command: >
+      /bin/bash -c "
+      echo '🚀 Iniciando SQL Server...' &&
+      /opt/mssql/bin/sqlservr &
+      echo '⏳ Esperando 60 segundos para que SQL Server inicie completamente...' &&
+      sleep 60 &&
+      echo '📊 Ejecutando script de inicialización...' &&
+      /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P TechAssist2024! -i /tmp/schema.sql &&
+      echo '✅ Base de datos TechAssistDB creada exitosamente' &&
+      echo '✅ SQL Server listo para aceptar conexiones' &&
+      wait
+      "
 
   backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+    build: ./backend
     container_name: techassist-backend
-    environment:
-      - DATABASE_URL=mssql+pyodbc://sa:TechAssist2025!@sqlserver:1433/TechAssistDB?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
-      - JWT_SECRET=your-super-secret-jwt-key-change-in-production
-      - CORS_ORIGINS=http://localhost:3000,http://localhost
     ports:
       - "8001:8001"
+    environment:
+      - DB_SERVER=sqlserver
+      - DB_NAME=TechAssistDB
+      - DB_USER=sa
+      - DB_PASSWORD=TechAssist2024!
+      - DB_PORT=1433
+      - SECRET_KEY=super-secret-key-change-in-production-min-32-chars-here
+      - ALGORITHM=HS256
+      - ACCESS_TOKEN_EXPIRE_MINUTES=30
+      - API_HOST=0.0.0.0
+      - API_PORT=8001
+      - DEBUG=True
+      - CORS_ORIGINS=http://localhost:3000,http://localhost:8001
+      - UPLOAD_FOLDER=/app/uploads
+      - MAX_UPLOAD_SIZE=5242880
+      - ALLOWED_EXTENSIONS=jpg,jpeg,png,gif,pdf
     depends_on:
       sqlserver:
         condition: service_healthy
     networks:
       - techassist-network
+    restart: on-failure
     volumes:
       - ./backend:/app
-      - ./sql:/app/sql
-      - /app/__pycache__
-    command: >
-      sh -c "python init_db.py &&
-             uvicorn server:app --host 0.0.0.0 --port 8001 --reload"
+      - backend_uploads:/app/uploads
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
+    build: ./frontend
     container_name: techassist-frontend
-    environment:
-      - REACT_APP_BACKEND_URL=http://localhost:8001
-      - CHOKIDAR_USEPOLLING=true
     ports:
       - "3000:3000"
+    environment:
+      - REACT_APP_API_URL=http://localhost:8001
+      - WATCHPACK_POLLING=true
+      - CHOKIDAR_USEPOLLING=true
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     networks:
       - techassist-network
-    volumes:
-      - ./frontend/src:/app/src
-      - ./frontend/public:/app/public
-      - /app/node_modules
     stdin_open: true
     tty: true
-
-volumes:
-  sqlserver_data:
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
 
 networks:
   techassist-network:
     driver: bridge
+
+volumes:
+  sqlserver_data:
+    driver: local
+  backend_uploads:
+    driver: local
